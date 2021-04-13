@@ -2,12 +2,14 @@
  * Audio.h
  *
  *  Created on: Oct 26,2018
- *  Updated on: Mar 08,2021
+ *  Updated on: Apr 10,2021
  *      Author: Wolle (schreibfaul1)   ¯\_(ツ)_/¯
  */
 
 #ifndef AUDIO_H_
 #define AUDIO_H_
+#pragma GCC optimize ("Ofast")
+
 #define FF_LFN_UNICODE      2
 #include "Arduino.h"
 #include "base64.h"
@@ -40,26 +42,26 @@ class AudioBuffer {
 // AudioBuffer will be allocated in PSRAM, If PSRAM not available or has not enough space AudioBuffer will be
 // allocated in FlashRAM with reduced size
 //
-//                      m_readPtr                 m_writePtr                 m_endPtr
-//                           |<------dataLength------->|<------ writeSpace ----->|
-//                           ▼                         ▼                         ▼
-// ---------------------------------------------------------------------------------------------------------------
-// |                       <--m_buffSize-->                                      |      <--m_resBuffSize -->     |
-// ---------------------------------------------------------------------------------------------------------------
-// |<------freeSpace-------->|                         |<------freeSpace-------->|
+//  m_buffer            m_readPtr                 m_writePtr                 m_endPtr
+//   |                       |<------dataLength------->|<------ writeSpace ----->|
+//   ▼                       ▼                         ▼                         ▼
+//   ---------------------------------------------------------------------------------------------------------------
+//   |                     <--m_buffSize-->                                      |      <--m_resBuffSize -->     |
+//   ---------------------------------------------------------------------------------------------------------------
+//   |<-----freeSpace------->|                         |<------freeSpace-------->|
 //
 //
 //
-// if the space between m_readPtr and buffend < 1600 bytes copy data from the beginning to resBuff
-// so that the mp3 frame is always completed
+//   if the space between m_readPtr and buffend < m_resBuffSize copy data from the beginning to resBuff
+//   so that the mp3/aac/flac frame is always completed
 //
-//                               m_writePtr                 m_readPtr        m_endPtr
-//                                    |<-------writeSpace-1 --->|<--dataLength-->|
-//                                    ▼                         ▼                ▼
-// ---------------------------------------------------------------------------------------------------------------
-// |                       <--m_buffSize-->                                      |      <--m_resBuffSize -->     |
-// ---------------------------------------------------------------------------------------------------------------
-// |<---  ------dataLength--  ------>|<-------freeSpace------->|
+//  m_buffer                      m_writePtr                 m_readPtr        m_endPtr
+//   |                                 |<-------writeSpace------>|<--dataLength-->|
+//   ▼                                 ▼                         ▼                ▼
+//   ---------------------------------------------------------------------------------------------------------------
+//   |                        <--m_buffSize-->                                    |      <--m_resBuffSize -->     |
+//   ---------------------------------------------------------------------------------------------------------------
+//   |<---  ------dataLength--  ------>|<-------freeSpace------->|
 //
 //
 
@@ -67,6 +69,8 @@ public:
     AudioBuffer(size_t maxBlockSize = 0);       // constructor
     ~AudioBuffer();                             // frees the buffer
     size_t   init();                            // set default values
+    void     changeMaxBlockSize(uint16_t mbs);  // is default 1600 for mp3 and aac, set 16384 for FLAC
+    uint16_t getMaxBlockSize();                 // returns maxBlockSize
     size_t   freeSpace();                       // number of free bytes to overwrite
     size_t   writeSpace();                      // space fom writepointer to bufferend
     size_t   bufferFilled();                    // returns the number of filled bytes
@@ -74,7 +78,6 @@ public:
     void     bytesWasRead(size_t br);           // update readpointer
     uint8_t* getWritePtr();                     // returns the current writepointer
     uint8_t* getReadPtr();                      // returns the current readpointer
-    size_t   getMaxBlockLength();               // max length of read or write blocks
     uint32_t getWritePos();                     // write position relative to the beginning
     uint32_t getReadPos();                      // read position relative to the beginning
     void     resetBuffer();                     // restore defaults
@@ -128,6 +131,7 @@ public:
      * @return uint32_t current second of audio file, 0 if no file active
      */
     uint32_t getAudioCurrentTime();
+    bool setAudioPlayPosition(uint16_t sec);
     bool setFilePos(uint32_t pos);
     bool audioFileSeek(const float speed);
     uint32_t getTotalPlayingTime();
@@ -156,7 +160,7 @@ public:
     void setI2SCommFMT_LSB(bool commFMT);
 
 private:
-    void reset(); // free buffers and set defaults
+    void setDefaults(); // free buffers and set defaults
     void initInBuff();
     void processLocalFile();
     void processWebStream();
@@ -167,10 +171,11 @@ private:
     void printDecodeError(int r);
     void showID3Tag(String tag, const char* val);
     void unicode2utf8(char* buff, uint32_t len);
-    int  readWaveHeader(uint8_t* data, size_t len);
-    int  readFlacMetadata(uint8_t *data, size_t len);
-    int  readID3Metadata(uint8_t* data, size_t len);
-    int  readM4AContainer(uint8_t* data, size_t len);
+    int  read_WAV_Header(uint8_t* data, size_t len);
+    int  read_FLAC_Header(uint8_t *data, size_t len);
+    int  read_MP3_Header(uint8_t* data, size_t len);
+    int  read_M4A_Header(uint8_t* data, size_t len);
+    int  read_OGG_Header(uint8_t *data, size_t len);
     bool setSampleRate(uint32_t hz);
     bool setBitsPerSample(int bits);
     bool setChannels(int channels);
@@ -246,6 +251,7 @@ private:
                  FLAC_SEEK = 6, FLAC_VORBIS = 7, FLAC_CUESHEET = 8, FLAC_PICTURE = 9, FLAC_OKAY = 100};
     enum : int { M4A_BEGIN = 0, M4A_FTYP = 1, M4A_CHK = 2, M4A_MOOV = 3, M4A_FREE = 4, M4A_TRAK = 5, M4A_MDAT = 6,
                  M4A_ILST = 7, M4A_MP4A = 8, M4A_AMRDY = 99, M4A_OKAY = 100};
+    enum : int { OGG_BEGIN = 0, OGG_MAGIC = 1, OGG_OKAY = 100};
     typedef enum { LEFTCHANNEL=0, RIGHTCHANNEL=1 } SampleIndex;
     typedef enum { LOWSHELF = 0, PEAKEQ = 1, HIFGSHELF =2 } FilterType;
 
@@ -265,6 +271,11 @@ private:
     WiFiClientSecure  clientsecure; // @suppress("Abstract class cannot be instantiated")
     i2s_config_t      m_i2s_config; // stores values for I2S driver
     i2s_pin_config_t  m_pin_config;
+
+    const size_t    m_frameSizeWav  = 1600;
+    const size_t    m_frameSizeMP3  = 1600;
+    const size_t    m_frameSizeAAC  = 1600;
+    const size_t    m_frameSizeFLAC = 4096 * 4;
 
     char            chbuf[256];
     char            path[256];
@@ -290,11 +301,17 @@ private:
     uint8_t         m_playlistFormat = 0;           // M3U, PLS, ASX
     uint8_t         m_codec = CODEC_NONE;           //
     uint8_t         m_filterType[2];                // lowpass, highpass
-    int16_t         m_outBuff[2048*2];              // [1152 * 2];          // Interleaved L/R
+    int16_t         m_outBuff[2048*2];              // Interleaved L/R
     int16_t         m_validSamples = 0;
     int16_t         m_curSample = 0;
     uint16_t        m_st_remember = 0;              // Save hash from the last streamtitle
     uint16_t        m_datamode = 0;                 // Statemaschine
+    uint8_t         m_flacBitsPerSample = 0;        // bps should be 16
+    uint8_t         m_flacNumChannels = 0;          // can be read out in the FLAC file header
+    uint32_t        m_flacSampleRate = 0;           // can be read out in the FLAC file header
+    uint16_t        m_flacMaxFrameSize = 0;         // can be read out in the FLAC file header
+    uint16_t        m_flacMaxBlockSize = 0;         // can be read out in the FLAC file header
+    uint32_t        m_flacTotalSamplesInStream = 0; // can be read out in the FLAC file header
     uint32_t        m_metaint = 0;                  // Number of databytes between metadata
     uint32_t        m_totalcount = 0;               // Counter mp3 data
     uint32_t        m_chunkcount = 0 ;              // Counter for chunked transfer
